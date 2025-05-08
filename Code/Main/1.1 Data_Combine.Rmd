@@ -1,0 +1,285 @@
+---
+title: "1.1 Data_Combining"
+author: "Jaeseok Hwang"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: defaulta
+---
+
+
+## Knitr option
+
+```{r, cache = F, echo = F, results = "hide"}
+#####
+
+library(knitr)
+
+knitr::opts_chunk$set(
+  cache = FALSE,
+  echo = FALSE,
+  warning = FALSE,
+  cache.lazy = FALSE,
+  fig.retina = 6,
+  fig.height = 9,
+  fig.width = 9,
+  message = FALSE,
+  error = TRUE
+)
+
+options(knitr.duplicate.label = "allow")
+
+```
+
+#### Packages 
+
+```{r pacakages, cache = FALSE, results = "hide"}
+
+library(here)
+library(rmarkdown)
+library(jsonlite)
+library(parallel)
+library(bookdown)
+library(knitr)
+library(stringr)
+
+library(measurements)
+library(data.table)
+library(tidyverse)
+library(smoother)
+library(dplyr)
+library(tmap)
+
+library(sf)
+library(stars)
+library(raster)
+library(exactextractr)
+library(terra)
+library(spatialEco)
+library(elevatr)
+library(soilDB)
+library(FedData)
+library(daymetr)
+  
+
+```
+
+
+```{r preparations, cache = T, results = "hide"}
+
+# Read the field parameter data 
+field_data <- jsonlite::fromJSON(
+ file.path(
+    here("Data", "Raw"),
+    "field_parameter.json"
+  ),
+  flatten = TRUE
+)%>%
+  data.table() 
+
+conv_table <- jsonlite::fromJSON(
+ file.path(
+    here("Data", "Raw"),
+    "nitrogen_conversion.json"
+  ),
+  flatten = TRUE
+)%>%
+  data.table() 
+
+
+
+
+# Read functions for data processing 
+source(here("Code","Main","0_Set_up_preparation.R"))
+source(here("Code","Functions","functions_for_process.R"))
+
+```
+
+
+```{r read data , echo = F, results = "hide"}
+
+ dat_binded <- readRDS(here("Data", "Processed", "Analysis_ready", "dat_binded.rds"))
+ info_binded <- readRDS(here("Data", "Processed", "Analysis_ready", "info_binded.rds"))
+ n_table <- readRDS(here("Data", "Processed", "Analysis_ready","n_table_anony.RDS"))
+
+```
+
+
+# 1. Filter out illinois trials from all the collected data
+
+```{r filter out illinois trials , echo = F, results = "hide"}
+
+# 1. add field_centroids and spatial information on n_table
+
+# Define the folder path
+data_folder <- here::here("Data", "Raw", "exp_bdry_data")
+
+# Get unique field IDs
+unique_ffy_ids <- unique(dat_binded$ffy_id)
+
+# Function to read RDS file and extract centroid
+get_field_centroid <- function(ffy_id) {
+  file_path <- file.path(data_folder, paste0(ffy_id, "_bdry.rds"))
+  
+  # Check if the file exists to avoid errors
+  if (!file.exists(file_path)) {
+    warning(paste("File not found:", file_path))
+    return(NULL)
+  }
+  
+  # Read the RDS file
+  field_sf <- readRDS(file_path)
+  
+  # Ensure it's an sf object
+  if (!inherits(field_sf, "sf")) {
+    warning(paste("File is not an sf object:", file_path))
+    return(NULL)
+  }
+  
+  # Compute centroid
+  centroid <- st_centroid(field_sf)
+  
+  # Keep only ffy_id and geometry
+  centroid_sf <- tibble(ffy_id = ffy_id, geometry = st_geometry(centroid)) %>%
+    st_as_sf()
+  
+  return(centroid_sf)
+}
+
+# Read all field boundaries and extract centroids
+field_centroids <- map_dfr(unique_ffy_ids, get_field_centroid)
+
+# Ensure the sf object has the correct CRS (Coordinate Reference System)
+st_crs(field_centroids) <- st_crs(readRDS(file.path(data_folder, paste0(unique_ffy_ids[1], "_bdry.rds"))))  # Use the CRS from one of the files
+
+
+# Ensure both datasets are in the same CRS
+field_centroids <- st_transform(field_centroids, st_crs(ofpe_sf))
+
+
+# Perform a spatial join: Find which state polygon contains each centroid
+field_centroids <- field_centroids %>%
+  st_join(ofpe_sf %>% dplyr::select(stusps), join = st_within)
+
+
+setDT(field_centroids)
+
+n_tab <-merge(n_table, field_centroids[, .(ffy_id, stusps,geometry)], by = "ffy_id", all.x = TRUE)
+
+n_tab_il <- n_tab %>% filter(stusps == 'IL') 
+
+dat_reg <-dat_binded %>% dplyr::select(ffy_id, yield,n_rate,elev, slope,aspect, tpi, clay, sand, 
+                    silt, water_storage,prcp_t,gdd_t,edd_t,gdd_stg,edd_stg,gdd_stg_n,edd_stg_n) %>%
+       group_by(ffy_id) %>%
+  filter(
+    yield >= mean(yield, na.rm = TRUE) - sd(yield, na.rm = TRUE) * 1.5 & 
+    yield <= mean(yield, na.rm = TRUE) + sd(yield, na.rm = TRUE) * 1.5,
+    n_rate >= mean(n_rate, na.rm = TRUE) - sd(n_rate, na.rm = TRUE) * 1.5 & 
+    n_rate <= mean(n_rate, na.rm = TRUE) + sd(n_rate, na.rm = TRUE) * 1.5  ) %>%
+  rename(n = n_rate) %>%
+  ungroup() 
+
+
+df_il <- dat_reg %>% filter(ffy_id %in% n_tab_il$ffy_id)
+
+# filter out field 30_2 ( since 30_1 and 30_2 are same trials) 
+
+
+# cutting top and bottom 5% of applied nitrogen range 
+# (Short of observatios) 
+
+n_lower <- quantile(df_il$n, probs = 0.05, na.rm = TRUE)
+n_upper <- quantile(df_il$n, probs = 0.95, na.rm = TRUE)
+
+df <- df_il %>%
+  filter(n >= 115, n <= 250)
+
+# Make category of n_range by 15 (from 115 (5%) to 250 (95%))
+df <- df %>%
+  mutate(n_qt = cut(n, breaks = seq(115, 250, by = 15), include.lowest = TRUE, labels = FALSE))
+
+# Extract farm, field, and year assuming format "farm_field_year"
+df <- df %>%
+  mutate(
+    farm = str_extract(ffy_id, "^[^_]+"),          # Extracts the first part before "_"
+    field = str_extract(ffy_id, "(?<=_)[^_]+"),    # Extracts the second part between "_"
+    year = as.numeric(str_extract(ffy_id, "\\d{4}$"))  # Extracts the last 4 digits as year
+  )
+
+# View the result
+head(df)
+
+saveRDS(df, here("Data", "Processed", "Analysis_ready", "df_il.rds"))
+saveRDS(n_tab_il,here("Data", "Processed", "Analysis_ready","n_tab_il.RDS"))
+
+
+
+```
+
+# 2. Categories nitrogen range and filter out top and bottom 5% which are lack of obsrevations and field diversities
+
+```{r range , echo = F, results = "hide"}
+
+setDT(df)
+
+n_range_data <- df[, .(
+  min_n = min(n, na.rm = TRUE),
+  max_n = max(n, na.rm = TRUE),
+  median_n = median(n, na.rm = TRUE), 
+  prcp_t = unique(prcp_t,na.rm=TRUE),
+  year = unique(year,na.rm =TRUE) # To order by median nitrogen
+), by = ffy_id]
+
+
+# Ensure both data tables
+setDT(n_range_data)
+setDT(results_df)
+
+# Merge the data
+n_range_data <- merge(n_range_data, results_df[, .(ffy_id, eonr_n)], by = "ffy_id", all.x = TRUE)
+
+# Order ffy_id by ascending median nitrogen
+n_range_data <- n_range_data[order(year)]
+
+# Create the ridge plot
+range_of_n <- ggplot(n_range_data, aes(y = reorder(ffy_id, year), xmin = min_n, xmax = max_n)) +
+  geom_errorbarh(height = 0.5, color = "blue", size = 1) +  # Horizontal bars for nitrogen range
+  geom_point(aes(x = median_n), color = "red", size = 2) +  # Mark median nitrogen
+ #  geom_point(aes(x = eonr_n), color = "green", size = 2) +  # Mark EONR nitrogen
+  labs(title = "Nitrogen Range for Each Field (Ordered by Median N)",
+       x = "Nitrogen Rate (n)",
+       y = "Field ID (ffy_id)")
+
+
+ggsave(filename = here("range_of_n.png"), plot = range_of_n  , width = 8, height = 14, dpi = 300)
+
+
+```
+# 3. Check the yield distribution by fields and nitrogen categories
+
+```{r yield distribution , echo = F, results = "hide"}
+
+library(dplyr)
+library(huxtable)
+library(stringr)
+
+
+# Compute mean and variance of yield by ffy_id and year
+df_summary <- df %>%
+  group_by(year, ffy_id) %>%
+  summarise(
+    mean_yield = mean(yield, na.rm = TRUE),
+    var_yield = round(var(yield, na.rm = TRUE),1),
+    .groups = "drop"
+  ) %>%
+  arrange(year, ffy_id)
+
+# Create huxtable
+ht <- hux(df_summary) %>%
+  set_caption("Mean and Variance of Yield for Each ffy_id by Year") %>%
+  set_bold(1, everywhere, TRUE)
+
+
+
+```

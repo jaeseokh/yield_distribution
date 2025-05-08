@@ -1,0 +1,20 @@
+% Place figures and tables exactly where they were called
+\usepackage{float}
+\floatplacement{figure}{H}
+\floatplacement{table}{H}
+
+% Recommended by the modelsummary package
+\usepackage{booktabs}
+\usepackage{siunitx}
+\newcolumntype{d}{S[input-symbols = ()]}
+
+% Add affiliations (title.tex needs to be called under template-partials)
+\usepackage[noblocks]{authblk}
+\renewcommand*{\Authsep}{, }
+\renewcommand*{\Authand}{, }
+\renewcommand*{\Authands}{, }
+\renewcommand\Affilfont{\small}
+
+% Add line numbers
+\usepackage{lineno}
+\linenumbers

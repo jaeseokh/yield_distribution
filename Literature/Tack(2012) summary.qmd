@@ -1,0 +1,277 @@
+---
+title: "Paper Summary"
+author: "Tack, J., Harri, A., & Coble, K. (2012). More than mean effects: Modeling the effect of climate on the higher order moments of crop yields. American Journal of Agricultural Economics, 94(5), 1037-1054."
+date: "`r Sys.Date()`"
+format:
+  pdf:
+    number-sections: true
+fontsize: 12pt
+linestretch: 1.5
+---
+
+# Research Objective and Key Findings
+
+The paper by Tack, Harri, and Coble (2012) develops a **moment-based maximum entropy (MBME)** framework to model crop yield distributions under various climate and irrigation conditions. It emphasizes higher-order moments of yield distributions to assess the impacts of climate. Key findings include:
+
+- Climate and irrigation substantially influence the shape of yield distributions, not just the mean.
+
+- The proposed MBME approach flexibly captures the distribution tails, crucial for understanding extreme events.
+
+
+# Equations (1)–(4): Conceptualizing Moments and Regressions
+
+Equations (1)–(4) establish how moments of yield distributions are conditioned on agricultural factors. The general form is:
+
+### Equation (1): Basic Moment Function
+
+$$
+g(y_t) = f(x_t; \beta) + \epsilon_t
+$$
+
+- Specifies the conditional relationship between some transformation of yield ($g(y_t)$) and the explanatory variables ($x_t$).
+
+
+### Equation (2): System of Moment Equations
+
+$$
+g_j(y_t) = f(x_t; \beta_j) + \epsilon_{jt}, \quad j = 1, 2, \dots, J
+$$
+
+- Generalizes equation (1) to multiple moments (e.g., mean, variance, skewness, kurtosis).
+- Each moment ($g_j(y_t)$) is modeled as a separate equation with its own parameter vector ($\beta_j$).
+- No restrictions are imposed across equations, allowing each moment to have a distinct relationship with the covariates.
+
+
+### Equation (3) shows the limitation of Linear Moment Approach ( relies on the 1st moment) 
+
+
+### Equation (4) shows the empirical regression model of moment of yield on temparature, precipitation and irrigation(dummy)
+
+
+
+# Equations (5)–(11): Maximum Entropy Approach
+
+
+## Features of Equations (5) to (11): Maximum Entropy Approach
+
+### Equation (5): Definition of Moments
+
+$$
+\mu_j = \int y^j f(y) \, dy, \quad j = 1, 2, \dots, J
+$$
+
+- **Purpose**: Relates the moments of the yield distribution ($\mu_j$) to the density function $f(y)$.
+- $\mu_j$: Represents the $j$-th moment (e.g., mean, variance, skewness).
+- $f(y)$: The probability density function of the yield variable $y$.
+
+
+### Equation (6): Entropy of a Density Function
+
+$$
+H(f) = -\int f(y) \ln f(y) \, dy
+$$
+
+- **Entropy ($H(f)$)**: A measure of uncertainty or randomness in the distribution $f(y)$.
+- **Goal of the Maximum Entropy Approach**: Identify the density function $f(y)$ that maximizes entropy, subject to the moment constraints.
+
+
+### Equation (7): Maximum Entropy Optimization Problem
+
+$$
+f^* = \arg \max_{f} H(f)
+$$
+
+- **Objective**: Find the density function $f^*$ that maximizes entropy ($H(f)$).
+- This is solved under constraints that the density $f(y)$ satisfies:
+  1. Integrates to 1 (a valid probability distribution).
+  2. Matches the observed moments.
+
+
+### Equation (8): Constraints for the Optimization Problem
+
+$$
+\int f(y) \, dy = 1, \quad \int y^j f(y) \, dy = \mu_j, \quad j = 1, 2, \dots, J
+$$
+
+- **Constraint 1**: The total probability over all possible outcomes is 1.
+- **Constraint 2**: The density function must reproduce the observed moments $\mu_j$ for each $j$.
+
+### Equation (9): Lagrangian for the Optimization Problem
+
+$$
+L = -\int f(y) \ln f(y) \, dy 
+- \gamma_0 \left( \int f(y) \, dy - 1 \right) 
+- \sum_{j=1}^J \gamma_j \left( \int y^j f(y) \, dy - \mu_j \right)
+$$
+
+- **Purpose**: The Lagrangian incorporates the constraints into the optimization problem using Lagrange multipliers ($\gamma_0, \gamma_j$).
+- Each $\gamma_j$ enforces the $j$-th moment constraint.
+
+### Equation (10): First-Order Conditions for Maximization
+
+$$
+\frac{\partial L}{\partial f} = -\ln f(y) - 1 - \gamma_0 - \sum_{j=1}^J \gamma_j y^j = 0
+$$
+
+- **Solution**: Solving this equation gives the functional form of the density function $f(y)$ that maximizes entropy.
+
+### Equation (11): Maximum Entropy Density Function
+
+$$
+f^*(y) = \frac{1}{\psi(\gamma)} \exp\left(-\sum_{j=1}^J \gamma_j y^j \right)
+$$
+
+- **Solution**: The optimal density $f^*(y)$ is an exponential family distribution.
+- $\psi(\gamma)$: A normalizing constant ensuring that the total probability integrates to 1:
+  $$
+  \psi(\gamma) = \int \exp\left(-\sum_{j=1}^J \gamma_j y^j \right) dy
+  $$
+
+---
+
+### Key Features of the Maximum Entropy Approach:
+
+1. **Flexibility**:
+   - The method does not require a specific distributional assumption (e.g., normality). Instead, it derives the least-biased density consistent with the given moments.
+
+2. **Use of Observed Moments**:
+   - By enforcing constraints based on observed moments ($\mu_j$), the approach ensures that the resulting density aligns with the data.
+
+3. **Efficient Representation of Uncertainty**:
+   - Maximizing entropy ensures that the resulting distribution makes no unnecessary assumptions, leading to a representation that is minimally biased while consistent with the data.
+
+4. **Connection to Exponential Family Distributions**:
+   - The solution $f^*(y)$ falls within the exponential family, which includes common distributions like normal, gamma, and Poisson as special cases.
+
+
+### Key limitation of the Maximum Entroy Approach:
+
+- Dependence on selected moments
+- Sensitivity to errors
+(Hihgly relies on the accuracy and completeness of the data)
+- Assumes no information beyond the specified moments 
+ (ensures minimal bias, but fail to incorporate known insights )
+
+
+## Limitations of Lagrange Multipliers in Maximum Entropy Approach
+
+
+The lack of direct linkage between $\gamma_j$ and the explanatory variables poses challenges:
+- **Regression Coefficient Insight**: In a regression model, we could conclude, "Higher precipitation reduces yield variability (variance)," based on the sign and magnitude of $\beta$.
+- **Maximum Entropy Insight**: In contrast, $\gamma_2$ simply adjusts the density to fit the observed variance, without revealing whether or how precipitation or irrigation caused this variability.
+
+- **Regression Coefficients ($\beta$)**: Provide interpretable, actionable relationships between covariates and moments. For example, a positive $\beta_2$ might suggest, "Higher precipitation increases yield variability, so irrigation strategies should be implemented."
+- **Lagrange Multipliers ($\gamma$)**: These accurately reproduce the observed yield distribution but provide **no direct insight into the drivers** of variance or skewness.
+
+
+
+
+# Data Description
+
+The study uses a balanced panel of 84 counties in Arkansas, Mississippi, and Texas from 1972–2005. Key features:
+
+1. County-level cotton yield data (irrigated and dryland).
+
+2. Climatic variables include degree days (low, medium, high) and precipitation.
+
+3. Total of 4,284 observations.
+
+Arkansas and Mississippi generally have higher yields than Texas due to better climatic conditions and irrigation coverage.
+
+
+
+# Empirical Results: Summary
+
+The regression results evaluate how climate and irrigation affect mean yield and higher-order moments:
+
+- **Mean yields ($y_t$):** Higher temperature negatively affects mean yields.
+
+- **Variance ($y_t^2$):** Extreme temperatures contribute significantly to yield variability.
+
+- **Skewness ($y_t^3$):** Shows sensitivity to irrigation and precipitation interactions.
+
+These results emphasize that climatic impacts on higher-order moments vary significantly across regions.
+
+
+
+# Estimated Moments
+
+Estimated moments under four scenarios:
+1. **Baseline (dryland and irrigated):** Reflects historical climate and management practices.
+
+2. **Climate change (+1°C temperature):** Simulates the impact of warming.
+
+### Findings:
+- **Mean ($m_1$):** Significant reduction in yields under climate change (e.g., Dawson, TX).
+
+- **Variance ($m_2$):** Observed mean-preserving spreads in certain regions.
+
+- **Skewness ($m_3$):** Shift towards less favorable yield distributions in some cases.
+
+
+
+# Comparison with Other Approaches
+
+Gaussian-based models assume normality in yield distributions:
+
+$y_{ist} = \alpha_i + \beta_1 p_t + \beta_2 t_t + \beta_3 irrig_t + \epsilon_{ist}, \quad \epsilon_{ist} \sim N(0, \sigma^2)$
+
+Findings show:
+- Gaussian models fail to capture skewness and heavy tails.
+
+- MBME provides a more flexible and accurate representation of yield distributions.
+
+
+## Explanation of Figures 2 to 5
+
+### Figure 2: The Shape of Yield Distributions Across Regions
+
+- Likely shows the **probability density functions (PDFs)** of upland cotton yields for different states or regions (e.g., Arkansas, Mississippi, Texas).
+- **Purpose**: To illustrate differences in yield distribution characteristics such as:
+  - **Mean**: Center of the distribution (e.g., higher in Mississippi).
+  - **Variance**: Spread or variability (e.g., potentially higher in Texas due to more dryland farming).
+  - **Skewness**: Asymmetry (e.g., indicating greater downside risk).
+  - **Kurtosis**: Tail behavior or extreme outcomes.
+
+---
+
+### Figure 3: Effects of Precipitation and Irrigation on Yield Moments
+
+- Likely depicts how **precipitation and irrigation** interact to influence different moments of yield distributions (e.g., mean, variance, skewness).
+- Could be a series of plots or a surface showing:
+  - **Mean (1st moment)**: Increases with precipitation but plateaus or interacts positively with irrigation.
+  - **Variance (2nd moment)**: May rise with higher precipitation variability or decrease under irrigation.
+  - **Skewness (3rd moment)**: Indicates changes in risk (e.g., a shift in yield toward higher or lower extremes).
+
+---
+
+### Figure 4: Estimated Yield Distributions Under Climate Scenarios
+
+- Likely compares **yield distributions** under different climate or weather scenarios (e.g., normal, dry, and wet years).
+- **Purpose**: To demonstrate how varying climate conditions shift the yield distribution:
+  - **Dry scenarios**: Likely to lower mean yields, increase variance, and shift skewness leftward.
+  - **Wet scenarios**: Could increase mean yields but might also increase variability depending on the presence of irrigation.
+
+---
+
+### Figure 5: Role of Irrigation in Modifying Yield Risk
+
+- Likely focuses on the **interaction between irrigation and climate variables** (e.g., precipitation or temperature) and their impact on yield moments.
+- Could illustrate:
+  - **Irrigation reducing variance**: Stabilizing yields by buffering against drought or excess rainfall.
+  - **Irrigation interacting with precipitation**: Showing diminishing returns or differential effects depending on baseline water levels.
+  - **Risk Reduction**: A comparison of skewness or tail risks (e.g., reducing downside risks with irrigation).
+
+---
+
+These figures collectively illustrate the **shape of yield distributions** and how they change with climate and management factors (e.g., irrigation), providing insights into both **central tendencies (mean)** and **risk characteristics (variance, skewness, and tail behavior)**.
+
+
+
+# Conclusion
+
+The study introduces a robust framework for analyzing yield distributions:
+1. MBME effectively models higher-order moments, capturing skewness and tail behavior.
+
+2. Results emphasize the importance of considering entire yield distributions, especially under climate change.
+
