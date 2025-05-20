@@ -1,6 +1,44 @@
+# macOS system files
 .DS_Store
+
+# R session and history files
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+
+# RStudio project files
+.Rproj.user/
+.Rproj.user
+*.Rproj
+
+# Package build files
+.Rcheck/
+.Rbuildignore
+*.tar.gz
+*.Rout
+*.Rout.save
+*.Rout.fail
+
+# Quarto/Markdown output
+*.html
+*.pdf
+*.docx
+*.knit.md
+*.utf8.md
+*.nb.html
+
+# Cache and logs
+__pycache__/
+.Rcache/
+*.log
+
+#  Private Research folders (untracked data/results)
 Data/
 Writing/
-Results/Data/
-Writing/
 Results/
+
+# Environment and dependency files
+.renv/
+renv.lock
+packrat/

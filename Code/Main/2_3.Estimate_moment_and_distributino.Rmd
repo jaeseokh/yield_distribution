@@ -1,0 +1,657 @@
+---
+title: "2_2.Data_analysis"
+author: "Jaeseok Hwang"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: defaulta
+---
+
+## Knitr option
+
+```{r, cache = F, echo = F, results = "hide"}
+#####
+
+library(knitr)
+knitr::opts_chunk$set(
+  cache = FALSE,
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+```
+
+## Load packages
+
+```{r packages}
+library(here)
+library(data.table)
+library(tidyverse)
+library(dplyr)
+library(grf)
+library(fixest)
+library(moments)
+library(pracma)
+library(ggplot2)
+library(huxtable)
+library(mgcv)  # For GAM
+library(plm)
+library(gamlss)
+library(gamlss.dist)
+library(purrr)
+library(plotly)
+library(pracma)     # for numerical integration
+library(stats4)     # for MLE if needed
+```
+
+
+# Data analysis Outline
+
+# 1. Estimate 1st,2nd,3rd moment
+
+## Regress yield, yield^2 , yield^3 on nitrogen + soil, topography + weather
+### by OLS and GAM
+## ( field level VS subplot level)
+
+## Predict mu1,mu2,mu3 (moments) with the regression model 
+## by setting soil, topography, gdd and edd value at the median level
+
+# 2. Estimate distribution of yield responses to nitrogen by precipitation level 
+#   by Maximum_Entropy approach 
+
+# 3. Plot(visualize) dist of yield responses to nitrogen by precipitation level
+
+# 4. Estimate EONR under the prob density of yield by N
+
+
+
+## Load and normalize data
+
+```{r load-data}
+
+dat_com <- readRDS(here("Data", "Processed", "Analysis_ready", "df_il.rds")) %>%
+  data.table() %>%
+  .[, .(yield, n, sand, clay, silt, water_storage, elev,
+        slope, aspect, prcp_t, gdd_t, edd_t, ffy_id)] %>%
+  na.omit()
+
+yield_min <- min(dat_com$yield, na.rm = TRUE)
+yield_max <- max(dat_com$yield, na.rm = TRUE)
+normalize_yield <- function(y) (y - yield_min) / (yield_max - yield_min)
+dat_com[, yield_scaled := normalize_yield(yield)]
+dat_com[, yield_m1 := yield_scaled]
+dat_com[, yield_m2 := yield_scaled^2]
+dat_com[, yield_m3 := yield_scaled^3]
+
+```
+
+## Create field-level data from subplot data
+# set field specific values at median level and get unique weather values 
+```{r field-level-data}
+
+field_dt <- dat_com[, .(
+  yield_m1 = median(yield_scaled),
+  yield_m2 = median(yield_scaled^2),
+  yield_m3 = median(yield_scaled^3),
+  n = median(n),
+  sand = median(sand), clay = median(clay), silt = median(silt),
+  water_storage = median(water_storage), elev = median(elev),
+  slope = median(slope), aspect = median(aspect),
+  prcp_t = unique(prcp_t), gdd_t = unique(gdd_t), edd_t = unique(edd_t)
+), by = ffy_id] %>% na.omit()
+
+```
+
+
+# 1. Estimate First, Second, Third Raw Moments
+
+```{r subplot-moment}
+
+# By OLS
+
+mod_m1 <- lm(yield_m1 ~ n + sand + clay + silt + water_storage +
+                  elev + slope + aspect + prcp_t + gdd_t + edd_t , data = dat_com)
+
+mod_m2 <- lm(yield_m2 ~ n + sand + clay + silt + water_storage +
+                  elev + slope + aspect + prcp_t  + gdd_t + edd_t, data = dat_com)
+
+mod_m3 <- lm(yield_m3 ~ n + sand + clay + silt + water_storage +
+                  elev + slope + aspect + prcp_t + gdd_t + edd_t, data = dat_com)
+
+# By GAM
+
+gam_mu1 <- gam(yield_m1 ~ s(n, k = 4) + s(prcp_t, k = 4) + 
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = dat_com, method = "REML")
+
+gam_mu2 <- gam(I(yield_m2) ~ s(n, k = 4) + s(prcp_t, k = 4) + 
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = dat_com, method = "REML")
+
+gam_mu3 <- gam(I(yield_m3) ~ s(n, k = 4) + s(prcp_t, k = 4) +
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = dat_com, method = "REML")
+
+```
+
+## Field-level OLS moment regressions
+
+
+```{r field-moment-ols}
+
+mod_fm1 <- lm(yield_m1 ~ n + sand + clay + silt + water_storage +
+                elev + slope + aspect + prcp_t + gdd_t + edd_t, data = field_dt)
+mod_fm2 <- lm(yield_m2 ~ n + sand + clay + silt + water_storage +
+                elev + slope + aspect + prcp_t + gdd_t + edd_t, data = field_dt)
+mod_fm3 <- lm(yield_m3 ~ n + sand + clay + silt + water_storage +
+                elev + slope + aspect + prcp_t + gdd_t + edd_t, data = field_dt)
+
+                # By GAM
+
+gam_fm1 <- gam(yield_m1 ~ s(n, k = 4) + s(prcp_t, k = 4) + 
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = field_dt, method = "REML")
+
+gam_fm2 <- gam(I(yield_m2) ~ s(n, k = 4) + s(prcp_t, k = 4) + 
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = field_dt, method = "REML")
+
+gam_fm3 <- gam(I(yield_m3) ~ s(n, k = 4) + s(prcp_t, k = 4) + 
+  sand + clay + silt + water_storage + elev + slope + aspect + gdd_t + edd_t,
+  data = field_dt, method = "REML")
+```
+
+
+
+# 2. Create Prediction Grid
+
+```{r subplot prediction}
+
+# Prediction grid (identical sequence for both subplot and field_dt)
+n_seq <- quantile(dat_com$n, probs = seq(0.1, 0.9, length.out = 5), na.rm = TRUE)
+prcp_seq <- quantile(dat_com$prcp_t, probs = seq(0.1, 0.9, length.out = 5), na.rm = TRUE)
+
+
+
+# Median values for other covariates
+cov_meds <- dat_com[, .(sand = median(sand), clay = median(clay), silt = median(silt),
+             water_storage = median(water_storage), elev = median(elev),
+            slope = median(slope), aspect = median(aspect),
+              gdd_t = median(gdd_t),edd_t = median(edd_t))]
+
+
+grid <- CJ(n = n_seq, prcp_t = prcp_seq)
+grid <- cbind(grid, cov_meds[rep(1, nrow(grid))])
+
+# Predict Raw Moments by OLS
+
+grid[, mu1 := predict(mod_m1, newdata = grid)]
+grid[, mu2 := predict(mod_m2, newdata = grid)]
+grid[, mu3 := predict(mod_m3, newdata = grid)]
+
+# Predict Raw moments by GAM
+grid[, mu1_gam := predict(gam_mu1, newdata = grid)]
+grid[, mu2_gam := predict(gam_mu2, newdata = grid)]
+grid[, mu3_gam := predict(gam_mu3, newdata = grid)]
+
+
+grid[, var_check := mu2 - mu1^2]
+summary(grid$var_check)
+grid[var_check <= 0]
+
+
+```
+
+```{r field-prediction-grid}
+
+field_cov_meds <- field_dt[, .(
+  sand = median(sand), clay = median(clay), silt = median(silt),
+  water_storage = median(water_storage), elev = median(elev),
+  slope = median(slope), aspect = median(aspect),
+  gdd_t = median(gdd_t), edd_t = median(edd_t))]
+
+field_grid <- CJ(n = n_seq, prcp_t = prcp_seq)
+field_grid <- cbind(field_grid, field_cov_meds[rep(1, nrow(field_grid))])
+
+field_grid[, mu1 := predict(mod_fm1, newdata = field_grid)]
+field_grid[, mu2 := predict(mod_fm2, newdata = field_grid)]
+field_grid[, mu3 := predict(mod_fm3, newdata = field_grid)]
+
+field_grid[, mu2 := pmax(mu2, mu1^2 + 1e-4)]
+field_grid[, mu3 := pmin(pmax(mu3, mu2 * mu1 + 1e-4), mu1)]
+
+# Predict field-level GAM moments
+field_grid[, mu1_gam := predict(gam_fm1, newdata = field_grid)]
+field_grid[, mu2_gam := predict(gam_fm2, newdata = field_grid)]
+field_grid[, mu3_gam := predict(gam_fm3, newdata = field_grid)]
+
+# Regularize moments to prevent invalid inputs
+field_grid[, mu2_gam := pmax(mu2_gam, mu1_gam^2 + 1e-4)]
+field_grid[, mu3_gam := pmin(pmax(mu3_gam, mu2_gam * mu1_gam + 1e-4), mu1_gam)]
+
+
+```
+
+## 3. Maximum Entropy Estimation Based on OLS and GAM Moments
+
+```{r mbme-subplot-ols-vs-gam}
+
+# Define MBME estimator function
+estimate_mbme_density <- function(mu1, mu2, mu3, support = c(0, 1)) {
+  if (any(is.na(c(mu1, mu2, mu3))) || (mu2 - mu1^2 <= 0)) {
+    warning("Invalid or inconsistent moment inputs.")
+    return(NULL)
+  }
+
+  safe_exp <- function(x) {
+    x <- ifelse(x > 700, 700, x)  # avoid overflow in exp()
+    exp(x)
+  }
+
+  # Objective: match estimated vs. target raw moments over [0, 1]
+  f_obj <- function(lambda) {
+    Z <- tryCatch(
+      integrate(function(y) safe_exp(lambda[1]*y + lambda[2]*y^2 + lambda[3]*y^3), 0, 1)$value,
+      error = function(e) Inf
+    )
+    m1 <- tryCatch(
+      integrate(function(y) y * safe_exp(lambda[1]*y + lambda[2]*y^2 + lambda[3]*y^3), 0, 1)$value / Z,
+      error = function(e) Inf
+    )
+    m2 <- tryCatch(
+      integrate(function(y) y^2 * safe_exp(lambda[1]*y + lambda[2]*y^2 + lambda[3]*y^3), 0, 1)$value / Z,
+      error = function(e) Inf
+    )
+    m3 <- tryCatch(
+      integrate(function(y) y^3 * safe_exp(lambda[1]*y + lambda[2]*y^2 + lambda[3]*y^3), 0, 1)$value / Z,
+      error = function(e) Inf
+    )
+    sum((c(m1, m2, m3) - c(mu1, mu2, mu3))^2)
+  }
+
+  # First try with BFGS, then fallback to box-constrained L-BFGS-B if needed
+  res <- tryCatch({
+    optim(par = c(0, 0, 0), fn = f_obj, method = "BFGS")
+  }, error = function(e) NULL)
+
+  if (is.null(res) || res$convergence != 0) {
+    res <- tryCatch({
+      optim(par = c(0, 0, 0), fn = f_obj, method = "L-BFGS-B",
+            lower = rep(-50, 3), upper = rep(50, 3))
+    }, error = function(e) NULL)
+  }
+
+  if (is.null(res) || res$convergence != 0) {
+    warning("MBME optimization failed — returning NULL.")
+    return(NULL)
+  }
+
+  lambda <- res$par
+
+  # Return MBME density function on [support]
+  function(y) {
+    y_s <- (y - support[1]) / (support[2] - support[1])
+    Z <- integrate(function(x) safe_exp(lambda[1]*x + lambda[2]*x^2 + lambda[3]*x^3), 0, 1)$value
+    safe_exp(lambda[1]*y_s + lambda[2]*y_s^2 + lambda[3]*y_s^3) / (Z * (support[2] - support[1]))
+  }
+}
+
+# Common yield grid (rescaled to [0, 1] to match normalized moments)
+yield_grid <- seq(0, 1, length.out = 101)
+
+# --- MBME Results from OLS moments ---
+mbme_ols_sub <- list()
+
+# Add regularization to prevent invalid moment combinations
+grid[, mu2 := pmax(mu2, mu1^2 + 1e-4)]  # Ensures positive-definite second moment
+grid[, mu3 := pmin(pmax(mu3, mu2 * mu1 + 1e-4), mu1)]  # Trim skewness for feasibility
+
+for (i in seq_len(nrow(grid))) {
+  mu1 <- grid$mu1[i]
+  mu2 <- grid$mu2[i]
+  mu3 <- grid$mu3[i]
+
+  f_density <- tryCatch(
+    estimate_mbme_density(mu1, mu2, mu3, support = c(0, 1)),
+    error = function(e) {
+      message("Failed at row ", i, ": ", conditionMessage(e))
+      return(NULL)
+    }
+  )
+
+  if (!is.null(f_density)) {
+    dens_vals <- sapply(yield_grid, f_density)
+    mbme_ols_sub[[i]] <- data.table(
+      grid_row = i,
+      yield = yield_grid * (yield_max - yield_min) + yield_min,  # Back-transform
+      density = dens_vals / (yield_max - yield_min),  # Adjust for scale
+      n = grid$n[i],
+      prcp_t = grid$prcp_t[i],
+      method = "Sub_OLS"
+    )
+  }
+}
+
+# --- MBME Results from GAM moments ---
+mbme_gam_sub <- list()
+
+grid[, mu2_gam := pmax(mu2_gam, mu1_gam^2 + 1e-4)]
+grid[, mu3_gam := pmin(pmax(mu3_gam, mu2_gam * mu1_gam + 1e-4), mu1_gam)]
+
+for (i in seq_len(nrow(grid))) {
+  mu1 <- grid$mu1_gam[i]
+  mu2 <- grid$mu2_gam[i]
+  mu3 <- grid$mu3_gam[i]
+
+  f_density <- tryCatch(
+    estimate_mbme_density(mu1, mu2, mu3, support = c(0, 1)),
+    error = function(e) {
+      message("Failed at row ", i, ": ", conditionMessage(e))
+      return(NULL)
+    }
+  )
+
+  if (!is.null(f_density)) {
+    dens_vals <- sapply(yield_grid, f_density)
+    mbme_gam_sub[[i]] <- data.table(
+      grid_row = i,
+      yield = yield_grid * (yield_max - yield_min) + yield_min,
+      density = dens_vals / (yield_max - yield_min),
+      n = grid$n[i],
+      prcp_t = grid$prcp_t[i],
+      method = "Sub_GAM"
+    )
+  }
+}
+
+# Combine and label
+mbme_results_ols_sub <- rbindlist(mbme_ols_sub, use.names = TRUE)
+mbme_results_gam_sub <- rbindlist(mbme_gam_sub, use.names = TRUE)
+mbme_results_sub <- rbindlist(list(mbme_results_ols_sub, mbme_results_gam_sub), use.names = TRUE)
+
+# Label for plotting (revised to use only prcp_t as weather factor)
+mbme_results_sub[, weather := paste0("prcp = ", round(prcp_t, 1))]
+weather_levels <- mbme_results_sub[, sort(unique(weather))]
+mbme_results_sub[, weather := factor(weather, levels = weather_levels)]
+mbme_results_sub[, n_round := factor(round(n, 0), levels = sort(unique(round(n, 0))))]
+
+
+saveRDS(mbme_results_sub, here("Data","Processed","mbme_results_sub.rds"))
+
+```
+
+## MBME estimation at field-level densities
+
+```{r mbme-field-estimation}
+
+# Reuse estimate_mbme_density() and yield_grid defined earlier
+
+mbme_ols_field <- list()
+
+for (i in seq_len(nrow(field_grid))) {
+  mu1 <- field_grid$mu1[i]; mu2 <- field_grid$mu2[i]; mu3 <- field_grid$mu3[i]
+  f_density <- tryCatch(
+    estimate_mbme_density(mu1, mu2, mu3, support = c(0, 1)),
+    error = function(e) NULL)
+  if (!is.null(f_density)) {
+    dens_vals <- sapply(yield_grid, f_density)
+    mbme_ols_field[[i]] <- data.table(
+      grid_row = i,
+      yield = yield_grid * (yield_max - yield_min) + yield_min,
+      density = dens_vals / (yield_max - yield_min),
+      n = field_grid$n[i],
+      prcp_t = field_grid$prcp_t[i],
+      method = "Field-OLS"
+    )
+  }
+}
+
+# Estimate MBME densities from GAM-based field moments
+
+mbme_gam_field <- list()
+
+for (i in seq_len(nrow(field_grid))) {
+  mu1 <- field_grid$mu1_gam[i]
+  mu2 <- field_grid$mu2_gam[i]
+  mu3 <- field_grid$mu3_gam[i]
+
+  f_density <- tryCatch(
+    estimate_mbme_density(mu1, mu2, mu3, support = c(0, 1)),
+    error = function(e) NULL
+  )
+
+  if (!is.null(f_density)) {
+    dens_vals <- sapply(yield_grid, f_density)
+    mbme_gam_field[[i]] <- data.table(
+      grid_row = i,
+      yield = yield_grid * (yield_max - yield_min) + yield_min,
+      density = dens_vals / (yield_max - yield_min),
+      n = field_grid$n[i],
+      prcp_t = field_grid$prcp_t[i],
+      method = "Field-GAM"
+    )
+  }
+}
+
+# Combine both OLS and GAM field-level results
+
+mbme_results_ols_field <- rbindlist(mbme_ols_field, use.names = TRUE)
+mbme_results_gam_field <- rbindlist(mbme_gam_field, use.names = TRUE)
+mbme_results_field <- rbindlist(list(mbme_results_ols_field, mbme_results_gam_field), use.names = TRUE)
+
+# Label for plotting (revised to use only prcp_t as weather factor)
+mbme_results_field[, weather := paste0("prcp = ", round(prcp_t, 1))]
+weather_levels <- mbme_results_field[, sort(unique(weather))]
+mbme_results_field[, weather := factor(weather, levels = weather_levels)]
+mbme_results_field[, n_round := factor(round(n, 0), levels = sort(unique(round(n, 0))))]
+
+
+saveRDS(mbme_results_field, here("Data","Processed","mbme_results_field.rds"))
+
+
+
+
+```
+
+
+## Combine all MBME results and save
+
+```{r combine-mbme-results}
+
+mbme_results_sub <- readRDS(here("Data","Processed","mbme_results_sub.rds"))
+mbme_results_field <- readRDS(here("Data","Processed","mbme_results_field.rds"))
+mbme_comb <- rbindlist(list(mbme_results_sub, mbme_results_field), use.names = TRUE, fill = TRUE)
+mbme_comb[, n_round := factor(round(n, 0))]
+
+saveRDS(mbme_comb, here("Data", "Processed", "mbme_results_combined.rds"))
+
+```
+
+
+
+
+## 4. Plot distribution of Yield-N x weather
+
+```{r mbme-density-ols-vs-gam}
+
+mbme_comb <- readRDS(here("Data","Processed","mbme_results_combined.rds"))
+
+# Extract data level and method type
+mbme_comb[, data_level := fifelse(grepl("^Sub", method), "Subplot", "Field")]
+mbme_comb[, fit_method := fifelse(grepl("OLS", method), "OLS", "GAM")]
+
+# Precipitation label
+mbme_comb[, prcp_label := paste0("prcp = ", round(prcp_t, 1))]
+mbme_comb[, prcp_label := factor(prcp_label, levels = sort(unique(prcp_label)))]
+
+# Ensure consistent order
+mbme_comb[, data_level := factor(data_level, levels = c("Subplot", "Field"))]
+mbme_comb[, fit_method := factor(fit_method, levels = c("OLS", "GAM"))]
+
+# Filter for 5 nitrogen levels
+n_levels <- sort(unique(mbme_comb$n_round))
+n_plot_levels <- n_levels[1:5]
+mbme_plot <- mbme_comb[n_round %in% n_plot_levels]
+
+# OLS only
+mbme_ols <- mbme_plot[fit_method == "OLS"]
+
+# Filter to one nitrogen rate 
+target_n <- n_plot_levels[1]
+mbme_nslice <- mbme_ols[n_round == target_n]
+
+# Create discrete precipitation label
+mbme_nslice[, prcp_label := paste0("prcp = ", round(prcp_t, 1))]
+mbme_nslice[, prcp_label := factor(prcp_label, levels = sort(unique(prcp_label)))]
+
+# Plot
+yield_density_ols_n1 <- ggplot(
+  mbme_nslice,
+  aes(x = yield, y = density, color = prcp_label, group = interaction(prcp_label, data_level), linetype = data_level)
+) +
+  geom_line(size = 1.1, alpha = 0.95, lineend = "round") +
+  scale_color_viridis_d(option = "D", name = "Precipitation Level") +
+  scale_linetype_manual(values = c("Subplot" = "solid", "Field" = "dashed"), name = "Data Level") +
+  labs(
+    title = paste("OLS-Based Yield Distributions at N =", target_n),
+    x = "Yield", y = "Density"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 14)
+  )
+
+yield_density_ols_n1
+
+
+
+ggsave( filename = here("Results","Figures", "ols_yield_density_n1.png"),
+   plot = 
+yield_density_ols_n1,
+   width = 24,       # increase width (in inches)
+   height = 16,       # adjust height as needed
+   dpi = 300
+ )
+
+
+# GAM only
+mbme_gam <- mbme_plot[fit_method == "GAM"]
+
+# Filter to the same nitrogen rate as OLS
+mbme_nslice_gam <- mbme_gam[n_round == target_n]
+
+# Create discrete precipitation label
+mbme_nslice_gam[, prcp_label := paste0("prcp = ", round(prcp_t, 1))]
+mbme_nslice_gam[, prcp_label := factor(prcp_label, levels = sort(unique(prcp_label)))]
+
+# Plot
+yield_density_gam_n1 <- ggplot(
+  mbme_nslice_gam,
+  aes(x = yield, y = density, color = prcp_label, group = interaction(prcp_label, data_level), linetype = data_level)
+) +
+  geom_line(size = 1.1, alpha = 0.95, lineend = "round") +
+  scale_color_viridis_d(option = "D", name = "Precipitation Level") +
+  scale_linetype_manual(values = c("Subplot" = "solid", "Field" = "dashed"), name = "Data Level") +
+  labs(
+    title = paste("GAM-Based Yield Distributions at N =", target_n),
+    x = "Yield", y = "Density"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 14)
+  )
+
+yield_density_gam_n1
+
+
+ggsave(
+  filename = here("Results", "Figures", "gam_yield_density_n1.png"),
+  plot = yield_density_gam_n1,
+  width = 24,
+  height = 16,
+  dpi = 300
+)
+
+
+
+```{r eonr estimation}
+
+price_y <- 5.5  # price per unit yield (e.g., $/bushel)
+price_n <- 0.7  # price per unit nitrogen (e.g., $/lb)
+
+profit_dt <- mbme_comb[, {
+  # Subset and get numeric integration over yield
+  expected_profit <- sum(density * (price_y * yield - price_n * n)) * (yield[2] - yield[1])
+  .(expected_profit = expected_profit)
+}, by = .(n, prcp_t,data_level,fit_method)]
+
+
+library(flextable)
+
+#  How the estimated profit at a certain N x prcp_t will be different by data_level at a given fit_method?
+
+# Wide format for OLS
+ols_wide <- dcast(
+  profit_dt[fit_method == "OLS"],
+  n + prcp_t ~ data_level,
+  value.var = "expected_profit"
+)
+ols_wide[, diff := Field - Subplot]
+setnames(ols_wide, c("Subplot", "Field", "diff"), c("Subplot_Profit", "Field_Profit", "Field_Minus_Subplot"))
+
+# Wide format for GAM
+gam_wide <- dcast(
+  profit_dt[fit_method == "GAM"],
+  n + prcp_t ~ data_level,
+  value.var = "expected_profit"
+)
+gam_wide[, diff := Field - Subplot]
+setnames(gam_wide, c("Subplot", "Field", "diff"), c("Subplot_Profit", "Field_Profit", "Field_Minus_Subplot"))
+
+
+# OLS Table
+ft_ols <- flextable(ols_wide) %>%
+  set_header_labels(
+    n = "Nitrogen",
+    prcp_t = "Precipitation",
+    Subplot_Profit = "Subplot ($)",
+    Field_Profit = "Field ($)",
+    Field_Minus_Subplot = "Field - Subplot ($)"
+  ) %>%
+  colformat_num(j = c("Subplot_Profit", "Field_Profit", "Field_Minus_Subplot"), digits = 2) %>%
+  autofit() %>%
+  add_header_lines("Expected Profit by Data Level — OLS")
+
+# GAM Table
+ft_gam <- flextable(gam_wide) %>%
+  set_header_labels(
+    n = "Nitrogen",
+    prcp_t = "Precipitation",
+    Subplot_Profit = "Subplot ($)",
+    Field_Profit = "Field ($)",
+    Field_Minus_Subplot = "Field - Subplot ($)"
+  ) %>%
+  colformat_num(j = c("Subplot_Profit", "Field_Profit", "Field_Minus_Subplot"), digits = 2) %>%
+  autofit() %>%
+  add_header_lines("Expected Profit by Data Level — GAM")
+
+library(webshot2)
+
+
+# Save OLS table
+save_as_image(ft_ols, path = "Results/Figures/expected_profit_OLS.png")
+
+# Save GAM table
+save_as_image(ft_gam, path = "Results/Figures/expected_profit_GAM.png")
+
+
+```
