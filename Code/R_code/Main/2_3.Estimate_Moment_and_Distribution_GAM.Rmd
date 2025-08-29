@@ -1,0 +1,516 @@
+---
+title: "2_2.Data_analysis"
+author: "Jaeseok Hwang"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: defaulta
+---
+
+# June 24th Meeting with Taro.
+
+
+
+
+
+
+
+## Knitr option
+
+```{r, cache = F, echo = F, results = "hide"}
+#####
+
+library(knitr)
+knitr::opts_chunk$set(
+  cache = FALSE,
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+```
+
+## Load packages
+
+```{r packages}
+
+library(here)
+library(data.table)
+library(tidyverse)
+library(dplyr)
+library(grf)
+library(fixest)
+library(moments)
+library(pracma)
+library(ggplot2)
+library(huxtable)
+library(mgcv)  # For GAM
+library(plm)
+library(gamlss)
+library(gamlss.dist)
+library(purrr)
+library(plotly)
+library(scam)        # Shape-constrained additive models
+library(brms)        # Bayesian regression modeling
+library(pracma)     # for numerical integration
+library(stats4)     # for MLE if needed
+library(flextable)
+library(scales)
+library(officer)
+library(patchwork)
+library(kableExtra)
+library(viridis)
+library(caret)
+library(glmnet)
+library(fixest)
+
+
+```
+
+```{r moment estimates, cache = F, echo = F, results = "hide"}
+
+# --- Load and Prepare Data ---
+source(here::here("Code", "Functions", "functions_for_analysis.R"))
+
+# Load and normalize yield
+dat_comb <- readRDS(here("Data", "Processed", "Analysis_ready", "df_il.rds")) %>%
+  data.table() %>%
+  .[, .(yield, n, prcp_t, gdd_t, edd_t, slope, aspect, tpi, clay, sand, water_storage, ffy_id)] %>%
+  na.omit()
+
+# Precompute stats
+y_mean <- mean(dat_comb$yield)
+y_sd   <- sd(dat_comb$yield)
+n_mean <- mean(dat_comb$n)
+n_sd   <- sd(dat_comb$n)
+
+# Apply filtering using logical mask to avoid "length mismatch" error
+row_filter <- (
+  dat_comb$yield >= (y_mean - 2 * y_sd) & dat_comb$yield <= (y_mean + 2 * y_sd) &
+  dat_comb$n >= (n_mean - 1.5 * n_sd) & dat_comb$n <= (n_mean + 1.5 * n_sd)
+)
+
+dat_com <- dat_comb[row_filter]
+
+# Normalize yield and assign field_id
+dat_com[, field_id := ffy_id][, ffy_id := NULL]
+dat_com[, yield_scaled := (yield - min(yield)) / (max(yield - min(yield)))]
+
+# Compute raw moments
+dat_com[, `:=`(y1 = yield_scaled, y2 = yield_scaled^2, y3 = yield_scaled^3)]
+
+# Build formula functions
+build_gam_formula <- function(k_n = 4, k_p = 4, k_np = 3) {
+  as.formula(paste0(
+    "yield_scaled ~ s(n, k = ", k_n, ") + s(prcp_t, k = ", k_p, ") + ",
+    "ti(n, prcp_t, k = c(", k_np, ",", k_np, ")) + ",
+    "s(gdd_t, k = 4) + s(edd_t, k = 4) + ",
+    "slope + aspect + tpi + clay + sand + water_storage"
+  ))
+}
+
+build_quad_formula <- function(yvar) {
+  as.formula(paste0(
+    yvar, " ~ n + I(n^2) + prcp_t + gdd_t + edd_t + n:prcp_t + n:gdd_t + slope + aspect + tpi + clay + sand + water_storage"
+  ))
+}
+
+build_fe_formula <- function(yvar) {
+  as.formula(paste0(
+    yvar, " ~ n + I(n^2) + n:prcp_t + slope + aspect+ tpi + clay + sand + water_storage | field_id"
+  ))
+}
+
+# Fit raw moment regressions
+
+gam_m1 <- gam(build_gam_formula(), data = dat_com)
+gam_m2 <- gam(build_gam_formula(), data = cbind(dat_com[, .SD, .SDcols = setdiff(names(dat_com), c("yield_scaled", "y1", "y2", "y3"))], yield_scaled = dat_com$y2))
+gam_m3 <- gam(build_gam_formula(), data = cbind(dat_com[, .SD, .SDcols = setdiff(names(dat_com), c("yield_scaled", "y1", "y2", "y3"))], yield_scaled = dat_com$y3))
+
+quad_m1 <- lm(build_quad_formula("y1"), data = dat_com)
+quad_m2 <- lm(build_quad_formula("y2"), data = dat_com)
+quad_m3 <- lm(build_quad_formula("y3"), data = dat_com)
+
+fe_m1 <- feols(build_fe_formula("y1"), data = dat_com)
+fe_m2 <- feols(build_fe_formula("y2"), data = dat_com)
+fe_m3 <- feols(build_fe_formula("y3"), data = dat_com)
+
+# Build prediction grid
+n_seq <- seq(min(dat_com$n), max(dat_com$n), length.out = 50)
+prcp_seq <- seq(min(dat_com$prcp_t), max(dat_com$prcp_t), length.out = 50)
+grid <- as.data.table(expand.grid(n = n_seq, prcp_t = prcp_seq))
+
+fixed_covs <- dat_com[, .(
+  gdd_t = median(gdd_t), edd_t = median(edd_t), 
+  slope = median(slope), aspect  = median(aspect), tpi = median(tpi),
+   clay = median(clay), sand = median(sand), water_storage = median(water_storage)
+)]
+
+grid <- cbind(grid, fixed_covs[rep(1, .N), ])
+grid[, field_id := dat_com$field_id[1]]
+
+# Predict raw moments for each method
+grid[, `:=`(
+  mu1_hat_raw_gam = predict(gam_m1, newdata = grid),
+  mu2_hat_raw_gam = predict(gam_m2, newdata = grid),
+  mu3_hat_raw_gam = predict(gam_m3, newdata = grid),
+
+  mu1_hat_raw_quad = predict(quad_m1, newdata = grid),
+  mu2_hat_raw_quad = predict(quad_m2, newdata = grid),
+  mu3_hat_raw_quad = predict(quad_m3, newdata = grid),
+
+  mu1_hat_raw_fe = predict(fe_m1, newdata = grid, fixef = FALSE),
+  mu2_hat_raw_fe = predict(fe_m2, newdata = grid, fixef = FALSE),
+  mu3_hat_raw_fe = predict(fe_m3, newdata = grid, fixef = FALSE)
+)]
+
+# Assign prcp group
+prcp_breaks <- quantile(grid$prcp_t, probs = seq(0, 1, length.out = 6), na.rm = TRUE)
+prcp_labels <- c("Very Low", "Low", "Moderate", "High", "Very High")
+grid[, prcp_group := cut(prcp_t, breaks = prcp_breaks, labels = prcp_labels, include.lowest = TRUE)]
+
+
+# --- Step 6: Reshape for Plotting ---
+grid_long_raw_gam <- melt(grid,
+  measure.vars = c("mu1_hat_raw_gam", "mu2_hat_raw_gam", "mu3_hat_raw_gam"),
+  variable.name = "moment",
+  value.name = "value_raw_gam")
+grid_long_raw_gam[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_raw_quad <- melt(grid,
+  measure.vars = c("mu1_hat_raw_quad", "mu2_hat_raw_quad", "mu3_hat_raw_quad"),
+  variable.name = "moment",
+  value.name = "value_raw_quad")
+grid_long_raw_quad[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_raw_fe <- melt(grid,
+  measure.vars = c("mu1_hat_raw_fe", "mu2_hat_raw_fe", "mu3_hat_raw_fe"),
+  variable.name = "moment",
+  value.name = "value_raw_fe")
+grid_long_raw_fe[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+
+
+
+```
+
+```{r maximum entropy estimates, cache = F, echo = F, results = "hide"}
+
+# Convert to MBME input
+mbme_input_gam <- grid[
+  (mu2_hat_raw_gam > mu1_hat_raw_gam^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_gam, mu2 = mu2_hat_raw_gam, mu3 = mu3_hat_raw_gam)
+]
+
+mbme_input_quad <- grid[
+  (mu2_hat_raw_quad > mu1_hat_raw_quad^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_quad, mu2 = mu2_hat_raw_quad, mu3 = mu3_hat_raw_quad)
+]
+
+mbme_input_fe <- grid[
+  (mu2_hat_raw_fe > mu1_hat_raw_fe^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_fe, mu2 = mu2_hat_raw_fe, mu3 = mu3_hat_raw_fe)
+]
+
+# Estimate MBME densities
+estimate_mbme_safely <- function(data, model_label) {
+  mbme_list <- lapply(1:nrow(data), function(i) {
+    row <- data[i]
+    est <- tryCatch(
+      estimate_mbme_density(row$mu1, row$mu2, row$mu3, support = c(0, 1)),
+      error = function(e) NULL
+    )
+    if (!is.null(est)) {
+      est <- as.data.table(est)
+      est[, `:=`(n = row$n, prcp_group = row$prcp_group, model = model_label)]
+    }
+    return(est)
+  })
+  rbindlist(Filter(Negate(is.null), mbme_list))
+}
+
+mbme_density_gam <- estimate_mbme_safely(mbme_input_gam, "GAM")
+mbme_density_quad <- estimate_mbme_safely(mbme_input_quad, "Quadratic")
+mbme_density_fe <- estimate_mbme_safely(mbme_input_fe, "FixedEffect")
+
+# Save outputs
+saveRDS(grid, here("Data", "Processed", "moments_grid_raw.rds"))
+saveRDS(mbme_density_gam, here("Data", "Processed", "mbme_density_gam.rds"))
+saveRDS(mbme_density_quad, here("Data", "Processed", "mbme_density_quad.rds"))
+saveRDS(mbme_density_fe, here("Data", "Processed", "mbme_density_fe.rds"))
+
+
+```
+
+
+
+
+# Step3-figure :
+# Yield Density Comparison Plot: MBME vs Normal vs Quantile Forest
+```{r fiure-yield density and distribution }
+
+
+## ------------------------------------------------
+## Visualization: Yield Distributions at Fixed N
+##
+## Method Comparison:
+##   - MBME: based on (μ1, μ2, μ3)
+##   - Normal: based on (μ1, μ2)
+##   - Quantile Forest: nonparametric quantile-based
+##
+## Goal:
+##   For a fixed nitrogen rate (e.g., N = 160),
+##   compare how estimated yield distributions
+##   vary across methods and precipitation levels
+## ------------------------------------------------
+
+# ---- Step 3: Yield Density Comparison (Grouped) ----
+mbme_density_all_models <- readRDS(here("Data", "Processed", "mbme_density_all_grouped.RDS"))
+gam_norm_densities <- readRDS(here("Data", "Processed", "norm_density_all_grouped.RDS"))
+qf_result_dt <- readRDS(here("Data", "Processed", "quantile_forest_result.rds"))
+
+# Define Ns and subset positions
+target_ns <- sort(unique(grid_all_raw$n))
+selected_ns <- target_ns[c(1, 3, 5, 7, 9)]
+tol <- 1e-4
+quant_cols <- grep("^q", names(qf_result_dt), value = TRUE)
+
+# Function to combine densities per group and N
+make_density_dt_grouped <- function(tn) {
+  mb <- mbme_density_all_models[abs(n - tn) < tol][, method := "MBME"]
+  no <- gam_norm_densities[abs(n - tn) < tol][, method := "Normal"]
+  qf_sub <- qf_result_dt[abs(n - tn) < tol]
+
+  qf_list <- lapply(seq_len(nrow(qf_sub)), function(i) {
+    row <- qf_sub[i]
+    qv <- unlist(row[, ..quant_cols])
+    if (length(unique(qv)) < 2 || any(is.na(qv))) return(NULL)
+    d <- density(qv, from = 0, to = 1, n = 200)
+    data.table(
+      yield = d$x, density = d$y,
+      prcp_t = row$prcp_t,
+      group_label = row$group_label,
+      method = "Quantile Forest"
+    )
+  })
+
+  rbindlist(list(
+    mb[, .(yield, density, prcp_t, group_label, method)],
+    no[, .(yield, density, prcp_t, group_label, method)],
+    rbindlist(qf_list, fill = TRUE)
+  ), fill = TRUE)
+}
+
+# Combine for selected Ns
+all_df <- rbindlist(lapply(selected_ns, function(tn) {
+  dt <- make_density_dt_grouped(tn)
+  dt[, N := factor(sprintf("%.1f", tn), levels = sprintf("%.1f", selected_ns))]
+  dt
+}))
+
+# Plot
+yield_min <- min(dat_com$yield, na.rm = TRUE)
+yield_max <- max(dat_com$yield, na.rm = TRUE)
+yield_range <- yield_max - yield_min
+
+compare_dist_plot <- ggplot(all_df, aes(x = yield, y = density, color = group_label)) +
+  geom_smooth(size = 0.7,se=FALSE) +
+  facet_grid(rows = vars(N), cols = vars(method), scales = "free_y") +
+  labs(
+    title = "Yield Density Comparison by Group across Nitrogen Levels",
+    x = "Yield (bu/ac)",
+    y = "Density",
+    color = "Elev × GDD Group"
+  ) +
+  scale_x_continuous(
+    labels = function(x) round(x * yield_range + yield_min, 1)
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.spacing = unit(0.5, "lines"), strip.text = element_text(face = "bold"),
+        legend.position = "bottom")
+
+saveRDS(compare_dist_plot, here("Results", "Figures", "compare_dist_plot.rds"))
+
+```
+
+
+# Step 4: Compute expected profit from MBME yield distributions
+
+```{r estimate_expected_profit }
+
+
+price_y <- 5.5  # $ per bu
+yield_min <- min(dat_com$yield, na.rm = TRUE)
+yield_max <- max(dat_com$yield, na.rm = TRUE)
+yield_range <- yield_max - yield_min
+price_n <- 0.7  # $ per lb of nitrogen
+
+delta_y <- 1 / 499  # since density is over 500 points from 0 to 1
+
+# ---- Step 1: Profit using mu1 only ----
+profit_mu1_grouped <- grid_bind_raw[grepl("GAM", model), .(
+  profit = price_y * (mu1 * yield_range + yield_min) - price_n * n,
+  method = "mu1"
+), by = .(n, prcp_t, model, group_label)]
+
+# ---- Step 2: Profit from Normal Density ----
+gam_norm_densities[, yield_bu := yield * yield_range + yield_min]
+profit_norm_grouped <- gam_norm_densities[
+  , .(
+    profit = sum(density * (price_y * yield_bu - price_n * n)) * delta_y,
+    method = "norm"
+  ),
+  by = .(n, prcp_t, model, group_label)
+]
+
+# ---- Step 3: Profit from MBME ----
+mbme_density_all_models[, yield_bu := yield * yield_range + yield_min]
+profit_mbme_grouped <- mbme_density_all_models[
+  , .(
+    profit = sum(density * (price_y * yield_bu - price_n * n)) * delta_y,
+    method = "mbme"
+  ),
+  by = .(n, prcp_t, model, group_label)
+]
+
+# ---- Step 4: Profit from Quantile Forest ----
+q_cols <- grep("^q", names(qf_result_dt), value = TRUE)
+qf_result_dt[, (q_cols) := lapply(.SD, function(x) x * yield_range + yield_min), .SDcols = q_cols]
+
+qf_long <- melt(qf_result_dt, id.vars = c("n", "prcp_t", "model", "group_label"),
+                measure.vars = q_cols, variable.name = "quantile", value.name = "yield")
+
+qf_long <- qf_long[!quantile %in% c("q0.5_bu", "q0.9_bu")]
+
+qf_long[, tau := as.numeric(gsub("q", "", quantile))]
+setorder(qf_long, model, n, prcp_t, group_label, tau)
+
+qf_long[, tau_diff := c(diff(tau), NA), by = .(model, n, prcp_t, group_label)]
+qf_long[, tau_diff := fifelse(is.na(tau_diff), shift(tau_diff, type = "lag"), tau_diff),
+        by = .(model, n, prcp_t, group_label)]
+qf_long[, area := tau_diff * yield]
+
+exp_yield_qf <- qf_long[, .(exp_yield = sum(area)), by = .(n, prcp_t, model, group_label)]
+exp_yield_qf[, profit := price_y * exp_yield - price_n * n]
+exp_yield_qf[, method := "quantile"]
+
+# ---- Step 5: Combine and Compute Differences ----
+profit_all_grouped <- rbindlist(list(
+  profit_mu1_grouped,
+  profit_norm_grouped,
+  profit_mbme_grouped,
+  exp_yield_qf[, .(n, prcp_t, model, group_label, profit, method)]
+), use.names = TRUE)
+
+# Step 1: Create a unique method label combining model + method
+profit_all_grouped[, method_label := paste(model, method, sep = "_")]
+
+# Step 2: Reshape to wide using method_label
+profit_wide_grouped <- profit_all_grouped %>%
+  mutate(n = round(n), prcp_t = round(prcp_t)) %>%
+  select(n, prcp_t, group_label, method_label, profit) %>%
+  pivot_wider(names_from = method_label, values_from = profit) %>%
+  data.table()
+
+# Step 3: Calculate profit differences relative to GAM_int_mbme
+profit_diff_all_grouped <- profit_wide_grouped %>%
+  mutate(
+    mbme = round(`GAM_int_mbme`, 1),
+    `M1 - MBME` = round(`GAM_int_mu1` - mbme, 1),
+    `Normal - MBME` = round(`GAM_int_norm` - mbme, 1),
+    `Quantile - MBME` = round(`QF_int_quantile` - mbme, 1)
+  ) %>%
+  select(group_label, prcp_t, n, mbme, `M1 - MBME`, `Normal - MBME`, `Quantile - MBME`) %>%
+  data.table()
+
+# Save if needed
+saveRDS(profit_all_grouped, here("Data", "Processed", "profit_all_grouped.rds"))
+saveRDS(profit_diff_all_grouped, here("Data", "Processed", "profit_diff_all_grouped.rds"))
+
+
+
+
+# Step 1: Filter to desired precipitation levels and arrange
+profit_ft_table_grouped <- profit_diff_all_grouped[
+  prcp_t %in% c(521, 743)
+] %>%
+  arrange(group_label, prcp_t, n)
+
+# Step 2: Create flextable
+profit_ft_grouped <- flextable(profit_ft_table_grouped) %>%
+  set_header_labels(
+    group_label = "Group",
+    prcp_t = "Precip",
+    n = "N"
+  ) %>%
+  merge_v(j = ~group_label + prcp_t) %>%
+  add_header_row(
+    values = c("", "", "", "MBME Profit", "Difference from MBME"),
+    colwidths = c(1, 1, 1, 1, 3)
+  ) %>%
+  border(i = NULL, j = 4, border.right = fp_border(color = "black", width = 1), part = "all") %>%
+  autofit()
+
+# Save as Word (optional)
+save_as_docx(profit_ft_grouped,
+             path = here("Results", "Tables", "table_profits_diff_from_mbme_grouped.docx"))
+
+# Step 3: Prepare for ggplot
+plot_dt_grouped <- profit_diff_all_grouped[prcp_t %in% c(521, 743)]
+
+plot_long_grouped <- melt(
+  plot_dt_grouped,
+  id.vars = c("group_label", "prcp_t", "n", "mbme"),
+  measure.vars = c("M1 - MBME", "Normal - MBME", "Quantile - MBME"),
+  variable.name = "method",
+  value.name = "profit_diff"
+)
+
+plot_long_grouped$method <- factor(
+  plot_long_grouped$method,
+  levels = c("M1 - MBME", "Normal - MBME", "Quantile - MBME")
+)
+
+# Step 4: Create the plot
+gg_profit_diff_grouped <- ggplot(plot_long_grouped, aes(x = n, y = profit_diff, color = method)) +
+  geom_line(size = 1.1) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_grid(group_label ~ prcp_t, labeller = label_both) +
+  scale_color_manual(
+    values = c(
+      "M1 - MBME" = "blue",
+      "Normal - MBME" = "darkgreen",
+      "Quantile - MBME" = "red"
+    )
+  ) +
+  labs(
+    title = "Profit Differences Compared to MBME by Group",
+    x = "Nitrogen Rate (lb/ac)",
+    y = "Profit Difference ($/ac)",
+    color = "Method"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold", size = 13)
+  )
+
+saveRDS(gg_profit_diff_grouped, here("Results", "Figures", "gg_profit_diff_grouped.rds"))
+
+
+# Step 5: Save the plot
+ggsave(
+  here("Results", "Figures", "figure_profit_diff_vs_mbme_grouped.png"),
+  gg_profit_diff_grouped,
+  width = 10, height = 6.5, dpi = 300
+)
+
+# View in RStudio
+gg_profit_diff_grouped
+
+
+```
+

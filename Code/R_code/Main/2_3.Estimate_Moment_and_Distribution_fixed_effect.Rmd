@@ -1,0 +1,492 @@
+---
+title: "2_2.Data_analysis"
+author: "Jaeseok Hwang"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: defaulta
+---
+
+# June 24th Meeting with Taro.
+
+
+
+
+
+
+
+## Knitr option
+
+```{r, cache = F, echo = F, results = "hide"}
+#####
+
+library(knitr)
+knitr::opts_chunk$set(
+  cache = FALSE,
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+```
+
+## Load packages
+
+```{r packages}
+
+library(here)
+library(data.table)
+library(tidyverse)
+library(dplyr)
+library(grf)
+library(fixest)
+library(moments)
+library(pracma)
+library(ggplot2)
+library(huxtable)
+library(mgcv)  # For GAM
+library(plm)
+library(gamlss)
+library(gamlss.dist)
+library(purrr)
+library(plotly)
+library(scam)        # Shape-constrained additive models
+library(brms)        # Bayesian regression modeling
+library(pracma)     # for numerical integration
+library(stats4)     # for MLE if needed
+library(flextable)
+library(scales)
+library(officer)
+library(patchwork)
+library(kableExtra)
+library(viridis)
+library(caret)
+library(glmnet)
+library(fixest)
+
+
+```
+
+
+
+
+## Load and normalize data (consistent with MBME assumptions)
+```{r data load and normalize}
+source(here::here("Code", "Functions", "functions_for_analysis.R"))
+
+# Step 0: Load data and normalize yield
+dat_comb <- readRDS(here("Data", "Processed", "Analysis_ready", "df_il.rds")) %>%
+  data.table() %>%
+  .[, .(yield, n, prcp_t, gdd_t, edd_t, elev, slope, aspect, tpi, clay, sand, silt, water_storage, ffy_id)] %>%
+  na.omit()
+
+# Pre-compute thresholds
+y_mean <- mean(dat_comb$yield, na.rm = TRUE)
+y_sd   <- sd(dat_comb$yield, na.rm = TRUE)
+n_mean <- mean(dat_comb$n, na.rm = TRUE)
+n_sd   <- sd(dat_comb$n, na.rm = TRUE)
+
+# Remove outliers
+dat_com <- dat_comb[
+  yield >= y_mean - 2 * y_sd & yield <= y_mean + 2 * y_sd &
+  n >= n_mean - 1.5 * n_sd & n <= n_mean + 1.5 * n_sd
+]
+
+dat_com[, field_id := ffy_id][, ffy_id := NULL]
+dat_com[, yield_scaled := (yield - min(yield)) / (max(yield - min(yield)))]
+
+# Compute raw moments
+dat_com[, `:=`(
+  y1 = yield_scaled,
+  y2 = yield_scaled^2,
+  y3 = yield_scaled^3
+)]
+
+# --- 1. Build GAM formula function ---
+build_gam_formula <- function(k_n = 4, k_p = 4, k_np = 3) {
+  form <- as.formula(paste0(
+    "yield_scaled ~ s(n, k = ", k_n, ") + s(prcp_t, k = ", k_p, ") + ",
+    "ti(n, prcp_t, k = c(", k_np, ",", k_np, ")) + ",
+    "s(gdd_t, k = 4) + s(edd_t, k = 4) + ",
+    "elev + slope + tpi + clay + sand + water_storage"
+  ))
+  return(form)
+}
+
+# --- 2. Build model formula functions ---
+build_quad_formula <- function(yvar) {
+  as.formula(paste0(
+    yvar, " ~ n + I(n^2) + prcp_t + gdd_t + edd_t + n:prcp_t + n:gdd_t + elev + slope + tpi + clay + sand + water_storage"
+  ))
+}
+
+build_fe_formula <- function(yvar) {
+  as.formula(paste0(
+    yvar, " ~ n + I(n^2) + n:prcp_t + elev + slope + tpi + clay + sand + water_storage | field_id"
+  ))
+}
+
+
+# --- 3. Fit GAM Model ---
+mu1_ct_gam <- gam(
+  formula = build_gam_formula(),
+  data = dat_com
+)
+
+dat_com[, mu1_hat_ct_gam := predict(mu1_ct_gam)]
+dat_com[, `:=`(
+  y2_ct_gam = (yield_scaled - mu1_hat_ct_gam)^2,
+  y3_ct_gam = (yield_scaled - mu1_hat_ct_gam)^3
+)]
+
+# --- 4. Fit Quadratic and FE Models ---
+mu1_ct_quad <- lm(build_quad_formula("yield_scaled"), data = dat_com)
+dat_com[, mu1_hat_ct_quad := predict(mu1_ct_quad)]
+dat_com[, `:=`(
+  y2_ct_quad = (yield_scaled - mu1_hat_ct_quad)^2,
+  y3_ct_quad = (yield_scaled - mu1_hat_ct_quad)^3
+)]
+
+mu1_ct_fe <- feols(build_fe_formula("yield_scaled"), data = dat_com)
+dat_com[, mu1_hat_ct_fe := predict(mu1_ct_fe)]
+dat_com[, `:=`(
+  y2_ct_fe = (yield_scaled - mu1_hat_ct_fe)^2,
+  y3_ct_fe = (yield_scaled - mu1_hat_ct_fe)^3
+)]
+
+# --- Step 1: Fit raw and central moment models ---
+fit_gam_moment <- function(y_var, data) {
+  gam(
+    formula = as.formula(paste0(
+      y_var, " ~ s(n, k = 4) + s(prcp_t, k = 4) + ti(n, prcp_t, k = c(3, 3)) + ",
+      "s(gdd_t, k = 4) + s(edd_t, k = 4) + elev + slope + tpi + clay + sand + water_storage"
+    )),
+    data = data
+  )
+}
+
+fit_quad_moment <- function(y_var, data) {
+  lm(build_quad_formula(y_var), data = data)
+}
+
+fit_fe_moment <- function(y_var, data) {
+  feols(build_fe_formula(y_var), data = data)
+}
+
+mu1_raw  <- fit_gam_moment("y1", dat_com)
+mu2_raw  <- fit_gam_moment("y2", dat_com)
+mu3_raw  <- fit_gam_moment("y3", dat_com)
+mu2_ct_gam   <- fit_gam_moment("y2_ct_gam", dat_com)
+mu3_ct_gam   <- fit_gam_moment("y3_ct_gam", dat_com)
+
+mu1_quad <- fit_quad_moment("y1", dat_com)
+mu2_quad <- fit_quad_moment("y2", dat_com)
+mu3_quad <- fit_quad_moment("y3", dat_com)
+mu2_ct_quad <- fit_quad_moment("y2_ct_quad", dat_com)
+mu3_ct_quad <- fit_quad_moment("y3_ct_quad", dat_com)
+
+mu1_fe   <- fit_fe_moment("y1", dat_com)
+mu2_fe   <- fit_fe_moment("y2", dat_com)
+mu3_fe   <- fit_fe_moment("y3", dat_com)
+mu2_ct_fe <- fit_fe_moment("y2_ct_fe", dat_com)
+mu3_ct_fe <- fit_fe_moment("y3_ct_fe", dat_com)
+
+# --- Step 3: Prediction Grid ---
+n_seq <- seq(min(dat_com$n), max(dat_com$n), length.out = 50)
+prcp_seq <- seq(min(dat_com$prcp_t), max(dat_com$prcp_t), length.out = 50)
+grid <- as.data.table(expand.grid(n = n_seq, prcp_t = prcp_seq))
+
+fixed_covariates <- dat_com[, .(
+  gdd_t = median(gdd_t), edd_t = median(edd_t), elev = median(elev), slope = median(slope),
+  tpi = median(tpi), clay = median(clay), sand = median(sand), water_storage = median(water_storage)
+)]
+
+grid <- cbind(grid, fixed_covariates[rep(1, .N), ])
+
+# --- Step 4: Predict ---
+grid[, mu1_hat_ct_gam := predict(mu1_ct_gam, newdata = grid)]
+grid[, mu2_hat_ct_gam := predict(mu2_ct, newdata = grid)]
+grid[, mu3_hat_ct_gam := predict(mu3_ct, newdata = grid)]
+
+grid[, mu1_hat_ct_quad := predict(mu1_ct_quad, newdata = grid)]
+grid[, mu2_hat_ct_quad := predict(mu2_ct_quad, newdata = grid)]
+grid[, mu3_hat_ct_quad := predict(mu3_ct_quad, newdata = grid)]
+
+grid[, field_id := dat_com$field_id[1]]
+
+grid[, mu1_hat_ct_fe := predict(mu1_ct_fe, newdata = grid, fixef = FALSE)]
+grid[, mu2_hat_ct_fe := predict(mu2_ct_fe, newdata = grid, fixef = FALSE)]
+grid[, mu3_hat_ct_fe := predict(mu3_ct_fe, newdata = grid, fixef = FALSE)]
+
+# --- Step 5: Group Precipitation Levels ---
+prcp_breaks <- quantile(grid$prcp_t, probs = seq(0, 1, length.out = 6), na.rm = TRUE)
+prcp_labels <- c("Very Low", "Low", "Moderate", "High", "Very High")
+grid[, prcp_group := cut(prcp_t, breaks = prcp_breaks, labels = prcp_labels, include.lowest = TRUE)]
+
+# --- Step 6: Reshape for Plotting ---
+grid_long_ct_gam <- melt(grid,
+  measure.vars = c("mu1_hat_ct_gam", "mu2_hat_ct_gam", "mu3_hat_ct_gam"),
+  variable.name = "moment",
+  value.name = "value_ct_gam")
+grid_long_ct_gam[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_ct_quad <- melt(grid,
+  measure.vars = c("mu1_hat_ct_quad", "mu2_hat_ct_quad", "mu3_hat_ct_quad"),
+  variable.name = "moment",
+  value.name = "value_ct_quad")
+grid_long_ct_quad[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_ct_fe <- melt(grid,
+  measure.vars = c("mu1_hat_ct_fe", "mu2_hat_ct_fe", "mu3_hat_ct_fe"),
+  variable.name = "moment",
+  value.name = "value_ct_fe")
+grid_long_ct_fe[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+# --- Step 6: Reshape for Plotting ---
+grid_long_raw_gam <- melt(grid,
+  measure.vars = c("mu1_hat_raw_gam", "mu2_hat_raw_gam", "mu3_hat_raw_gam"),
+  variable.name = "moment",
+  value.name = "value_raw_gam")
+grid_long_raw_gam[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_raw_quad <- melt(grid,
+  measure.vars = c("mu1_hat_raw_quad", "mu2_hat_raw_quad", "mu3_hat_raw_quad"),
+  variable.name = "moment",
+  value.name = "value_raw_quad")
+grid_long_raw_quad[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+grid_long_raw_fe <- melt(grid,
+  measure.vars = c("mu1_hat_raw_fe", "mu2_hat_raw_fe", "mu3_hat_raw_fe"),
+  variable.name = "moment",
+  value.name = "value_raw_fe")
+grid_long_raw_fe[, moment := factor(moment, labels = c("Mean", "Variance", "Skewness"))]
+
+# --- Save ---
+saveRDS(dat_com, here("Data", "Processed", "dat_com_mutate.rds"))
+saveRDS(gam_m1, here("Data", "Processed", "gam_mu1_raw.rds"))
+saveRDS(gam_m2, here("Data", "Processed", "gam_mu2_raw.rds"))
+saveRDS(gam_m3, here("Data", "Processed", "gam_mu3_raw.rds"))
+saveRDS(quad_m1, here("Data", "Processed", "quad_mu1_raw.rds"))
+saveRDS(quad_m2, here("Data", "Processed", "quad_mu2_raw.rds"))
+saveRDS(quad_m3, here("Data", "Processed", "quad_mu3_raw.rds"))
+saveRDS(fe_m1, here("Data", "Processed", "fe_mu1_raw.rds"))
+saveRDS(fe_m2, here("Data", "Processed", "fe_mu2_raw.rds"))
+saveRDS(fe_m3, here("Data", "Processed", "fe_mu3_raw.rds"))
+
+# Save outputs
+saveRDS(grid, here("Data", "Processed", "moments_grid_raw.rds"))
+saveRDS(grid_long_raw_gam, here("Data", "Processed", "grid_long_raw_gam.rds"))
+saveRDS(grid_long_raw_quad, here("Data", "Processed", "grid_long_raw_quad.rds"))
+saveRDS(grid_long_raw_fe, here("Data", "Processed", "grid_long_raw_fe.rds"))
+
+
+```
+
+
+# Step3 : Estimate Distribution of Yield at N × P using Three Methods
+
+```{r estimate distribution }
+
+## ---------------------------------------------
+## Step 3a: MBME Method (Maximum Entropy)
+##
+## Goal: Estimate yield density using only the first three raw moments (μ₁, μ₂, μ₃)
+## using the Maximum Entropy principle over support [0, 1]
+##
+## MBME solves for the distribution f(y) = exp(λ₁y + λ₂y² + λ₃y³) / Z
+## by matching raw moments:
+##   ∫ y f(y) dy = μ₁,
+##   ∫ y² f(y) dy = μ₂,
+##   ∫ y³ f(y) dy = μ₃
+##
+## The result is a smooth, flexible density satisfying moment constraints.
+## ---------------------------------------------
+
+
+## ---------------------------------------------
+## Step 3b: Normal Density Method (μ₁, μ₂ only)
+##
+## Assumption:
+##   Yield ~ Normal(μ₁, σ²), where σ² = μ₂ - μ₁²
+##
+## We construct the conditional density:
+##   f(y) = (1 / sqrt(2πσ²)) * exp(- (y - μ₁)² / (2σ²) )
+##
+## Implementation Note:
+## - Pre-filter (μ₂ - μ₁²) > 0 to ensure variance is valid
+## - Evaluation is done over yield_scaled ∈ [0, 1], same as MBME
+## - This method assumes normality of yield distribution
+## ---------------------------------------------
+
+# Convert to MBME input
+
+mbme_input_gam <- grid[
+  (mu2_hat_raw_gam > mu1_hat_raw_gam^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_gam, mu2 = mu2_hat_raw_gam, mu3 = mu3_hat_raw_gam)
+]
+
+mbme_input_quad <- grid[
+  (mu2_hat_raw_quad > mu1_hat_raw_quad^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_quad, mu2 = mu2_hat_raw_quad, mu3 = mu3_hat_raw_quad)
+]
+
+mbme_input_fe <- grid[
+  (mu2_hat_raw_fe > mu1_hat_raw_fe^2),
+  .(n, prcp_group, mu1 = mu1_hat_raw_fe, mu2 = mu2_hat_raw_fe, mu3 = mu3_hat_raw_fe)
+]
+
+# Estimate MBME densities
+estimate_mbme_safely <- function(data, model_label) {
+  mbme_list <- lapply(1:nrow(data), function(i) {
+    row <- data[i]
+    est <- tryCatch(
+      estimate_mbme_density(row$mu1, row$mu2, row$mu3, support = c(0, 1)),
+      error = function(e) NULL
+    )
+    if (!is.null(est)) {
+      est <- as.data.table(est)
+      est[, `:=`(n = row$n, prcp_group = row$prcp_group, model = model_label)]
+    }
+    return(est)
+  })
+  rbindlist(Filter(Negate(is.null), mbme_list))
+}
+
+mbme_density_gam <- estimate_mbme_safely(mbme_input_gam, "GAM")
+mbme_density_quad <- estimate_mbme_safely(mbme_input_quad, "Quadratic")
+mbme_density_fe <- estimate_mbme_safely(mbme_input_fe, "FixedEffect")
+
+saveRDS(mbme_density_gam, here("Data", "Processed", "mbme_density_gam.rds"))
+saveRDS(mbme_density_quad, here("Data", "Processed", "mbme_density_quad.rds"))
+saveRDS(mbme_density_fe, here("Data", "Processed", "mbme_density_fe.rds"))
+
+
+```
+
+
+#### Estimate Utility #######
+
+
+```{r estimate utility }
+
+# ---------------------------------------------
+# Farmer Utility Estimation 
+# ---------------------------------------------
+
+# Define farmer's profit function:
+#   profit = p_yield * yield - p_n * nitrogen
+#          = 5 * yield - 0.8 * n
+
+# Utility approaches:
+#
+# a) Risk Neutral:
+#    Utility = E[profit] = 5 * E[yield] - 0.8 * n
+#    → Only uses 1st moment (mean yield)
+#
+# b) Risk Averse:
+#    Assume CARA utility: U(profit) = -exp(-r * profit), r > 0
+#
+#    Cases:
+#      (1) 1st moment only:
+#          Expected utility ≈ U(5 * mu1 - 0.8 * n)
+#
+#      (2) Normal approximation (mu1, mu2):
+#          E[U] ≈ -exp(-r * (5 * mu1 - 0.8 * n) + 0.5 * r^2 * 25 * var_yield)
+#
+#      (3) MBME approach:
+#          Use full density f(y) from MBME:
+#            E[U] = ∫ -exp(-r * (5*y - 0.8*n)) f(y) dy
+#
+
+
+# For each approach and model (GAM / FE), estimate utility at each (n, prcp_group).
+
+# --- Step Y: Compute Utility under Risk Preferences ---
+
+# Constants
+p_yield <- 5     # price per unit yield
+p_n     <- 0.8   # price per unit nitrogen
+r       <- 0.02  # risk aversion coefficient (can adjust)
+
+# 1. Risk-neutral utility (linear in mean yield)
+grid[, `:=`(
+  util_rn_gam = p_yield * mu1_hat_raw_gam - p_n * n,
+  util_rn_fe  = p_yield * mu1_hat_raw_fe  - p_n * n
+)]
+
+# 2. Risk-averse utility with normal approx (mean and variance)
+grid[, `:=`(
+  var_gam = mu2_hat_raw_gam - mu1_hat_raw_gam^2,
+  var_fe  = mu2_hat_raw_fe  - mu1_hat_raw_fe^2
+)]
+
+grid[, `:=`(
+  util_ra_norm_gam = -exp(-r * (p_yield * mu1_hat_raw_gam - p_n * n) + 0.5 * r^2 * p_yield^2 * var_gam),
+  util_ra_norm_fe  = -exp(-r * (p_yield * mu1_hat_raw_fe  - p_n * n) + 0.5 * r^2 * p_yield^2 * var_fe)
+)]
+
+# 3. Risk-averse utility with MBME
+estimate_mbme_utility <- function(density_dt, r, p_yield, p_n) {
+  density_dt[, util := -exp(-r * (p_yield * yield - p_n * n))]
+  density_dt[, u := util * density]
+  density_dt[, .(util_ra_mbme = trapz(yield, u)), by = .(n, prcp_group, model)]
+}
+
+mbme_density_gam_util <- estimate_mbme_utility(mbme_density_gam, r, p_yield, p_n)
+mbme_density_fe_util  <- estimate_mbme_utility(mbme_density_fe,  r, p_yield, p_n)
+
+# Merge MBME utility back to grid for comparison
+grid <- merge(grid, mbme_density_gam_util[model == "GAM"], by = c("n", "prcp_group"), all.x = TRUE)
+grid <- merge(grid, mbme_density_fe_util[model == "FixedEffect"], by = c("n", "prcp_group"), suffixes = c("", "_fe"), all.x = TRUE)
+
+# Rename MBME columns for clarity
+grid[, `:=`(
+  util_ra_mbme_gam = util_ra_mbme,
+  util_ra_mbme_fe  = util_ra_mbme_fe
+)]
+
+# Clean up temporary column
+grid[, util_ra_mbme := NULL]
+
+# Save utility comparison
+saveRDS(grid, here("Data", "Processed", "utility_grid_compare.rds"))
+
+
+```
+
+# --- Step: Visualization of Utility Comparison ---
+```{r utiity comparison}
+
+# Melt utility values into long format for GAM model
+grid_long_util_gam <- melt(
+  grid,
+  id.vars = c("n", "prcp_group"),
+  measure.vars = c("util_rn_gam", "util_ra_norm_gam", "util_ra_mbme_gam"),
+  variable.name = "method",
+  value.name = "utility"
+)
+
+grid_long_util_gam[, method := factor(
+  method,
+  levels = c("util_rn_gam", "util_ra_norm_gam", "util_ra_mbme_gam"),
+  labels = c("Risk Neutral", "Risk Averse (Normal)", "Risk Averse (MBME)")
+)]
+
+# Plot for GAM model
+util_plot_gam <- ggplot(grid_long_util_gam, aes(x = n, y = utility, color = method)) +
+  geom_line(size = 1) +
+  facet_wrap(~prcp_group, scales = "free_y") +
+  labs(
+    title = "Utility Comparison across Risk Attitudes (GAM Model)",
+    x = "Nitrogen (lbs/ac)",
+    y = "Utility",
+    color = "Utility Type"
+  ) +
+  theme_minimal(base_size = 14)
+
+# Print plot
+print(util_plot_gam)
+
+```
